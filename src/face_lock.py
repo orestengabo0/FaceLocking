@@ -23,7 +23,7 @@ except Exception as e:
 from .haar_5pt import align_face_5pt, download_model
 
 
-TARGET_NAME = "Oreste"  
+TARGET_NAME = "Bonny"  
 
 # Action detection thresholds 
 BLINK_EAR_THRESH = 0.22  
