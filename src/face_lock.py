@@ -1,107 +1,41 @@
+# src/face_lock.py
+"""
+face_lock.py
+Main face locking module.
+
+Implements stable face tracking with action detection and history recording.
+
+Features:
+- Manual identity selection (choose which face to lock)
+- Robust face locking with timeout
+- Stable tracking across frames
+- Action detection while locked
+- Persistent action history to file
+
+Run:
+python -m src.face_lock
+"""
 
 from __future__ import annotations
-import datetime
 import time
-import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
-import onnxruntime as ort
-try:
-    import mediapipe as mp
-    from mediapipe.tasks import python
-    from mediapipe.tasks.python import vision
-except Exception as e:
-    mp = None
-    python = None
-    vision = None
-    _MP_IMPORT_ERROR = e
+
+from .haar_5pt import Haar5ptDetector, align_face_5pt
+from .embed import ArcFaceEmbedderONNX
+from .action_detector import ActionDetector, Action
+from .face_history_logger import FaceHistoryLogger
+from .camera_display import CameraDisplay
 
 
-from .haar_5pt import align_face_5pt, download_model
-
-
-TARGET_NAME = "Bonny"  
-
-# Action detection thresholds 
-BLINK_EAR_THRESH = 0.22  
-SMILE_MOUTH_WIDTH_RATIO = 1.4  
-MOVE_DELTA_THRESH = 20 
-MISSING_FRAMES_UNLOCK = 10  
-SMILE_OPEN_THRESH = 0.15 
-
-# History file
-HISTORY_DIR = Path("data/history")
-HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-
-
-@dataclass
-class FaceDet:
-    x1: int
-    y1: int
-    x2: int
-    y2: int
-    score: float
-    kps: np.ndarray  
-    eye_left_kps: np.ndarray 
-    eye_right_kps: np.ndarray  
-    mouth_kps: np.ndarray  
-
-@dataclass
-class LockedFace:
-    name: str
-    prev_center_x: float
-    prev_ear: float
-    prev_mouth_width_ratio: float
-    prev_mouth_open: float
-    prev_box: Tuple[int, int, int, int]
-    embedding: np.ndarray
-    missing_count: int = 0
-    history_file: Optional[Path] = None
-
-@dataclass
-class MatchResult:
-    name: Optional[str]
-    distance: float
-    similarity: float
-    accepted: bool
-
-
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a.reshape(-1), b.reshape(-1)))
-
-def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
-    return 1.0 - cosine_similarity(a, b)
-
-def iou(box1: Tuple[int, int, int, int], box2: Tuple[int, int, int, int]) -> float:
-    x1 = max(box1[0], box2[0])
-    y1 = max(box1[1], box2[1])
-    x2 = min(box1[2], box2[2])
-    y2 = min(box1[3], box2[3])
-    inter = max(0, x2 - x1) * max(0, y2 - y1)
-    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
-    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
-    return inter / (area1 + area2 - inter + 1e-6)
-
-def compute_ear(eye_kps: np.ndarray) -> float:
-   
-    v1 = np.linalg.norm(eye_kps[1] - eye_kps[5])
-    v2 = np.linalg.norm(eye_kps[2] - eye_kps[4])
-    h = np.linalg.norm(eye_kps[0] - eye_kps[3])
-    return (v1 + v2) / (2.0 * h + 1e-6)
-
-def compute_mouth_metrics(mouth_kps: np.ndarray, eye_dist: float) -> Tuple[float, float]:
-    
-    width = np.linalg.norm(mouth_kps[0] - mouth_kps[1])
-    height = np.linalg.norm(mouth_kps[2] - mouth_kps[3])
-    width_ratio = width / (eye_dist + 1e-6)
-    open_ratio = height / width
-    return width_ratio, open_ratio
-
+# =====================================================================
+# Face Database & Matcher (from recognize.py, simplified)
+# =====================================================================
 
 def load_db_npz(db_path: Path) -> Dict[str, np.ndarray]:
+    """Load face database from NPZ file."""
     if not db_path.exists():
         return {}
     data = np.load(str(db_path), allow_pickle=True)
@@ -111,303 +45,483 @@ def load_db_npz(db_path: Path) -> Dict[str, np.ndarray]:
     return out
 
 
-class ArcFaceEmbedderONNX:
-    def __init__(self, model_path: str = "models/embedder_arcface.onnx", input_size: Tuple[int, int] = (112, 112)):
-        self.in_w, self.in_h = int(input_size[0]), int(input_size[1])
-        self.sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        self.in_name = self.sess.get_inputs()[0].name
-        self.out_name = self.sess.get_outputs()[0].name
-
-    def _preprocess(self, aligned_bgr: np.ndarray) -> np.ndarray:
-        if aligned_bgr.shape[:2] != (self.in_h, self.in_w):
-            aligned_bgr = cv2.resize(aligned_bgr, (self.in_w, self.in_h))
-        rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
-        rgb = (rgb - 127.5) / 128.0
-        return np.transpose(rgb, (2, 0, 1))[None, ...].astype(np.float32)
-
-    @staticmethod
-    def _l2_normalize(v: np.ndarray) -> np.ndarray:
-        return v / (np.linalg.norm(v) + 1e-12)
-
-    def embed(self, aligned_bgr: np.ndarray) -> np.ndarray:
-        x = self._preprocess(aligned_bgr)
-        y = self.sess.run([self.out_name], {self.in_name: x})[0]
-        return self._l2_normalize(y.reshape(-1))
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Compute cosine similarity (both vectors must be L2-normalized)."""
+    a = a.reshape(-1).astype(np.float32)
+    b = b.reshape(-1).astype(np.float32)
+    return float(np.dot(a, b))
 
 
-class HaarFaceMeshExtended:
-    def __init__(self, min_size: Tuple[int, int] = (70, 70)):
-        haar_xml = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        self.face_cascade = cv2.CascadeClassifier(haar_xml)
-        if self.face_cascade.empty():
-            raise RuntimeError(f"Failed to load Haar: {haar_xml}")
-        if mp is None:
-            raise RuntimeError(
-                f"mediapipe import failed: {_MP_IMPORT_ERROR}\n"
-                f"Install: pip install mediapipe==0.10.x"
-            )
+def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Compute cosine distance = 1 - cosine_similarity."""
+    return 1.0 - cosine_similarity(a, b)
 
-        # Use MediaPipe Tasks FaceLandmarker (consistent with other modules)
-        model_path = download_model()
-        base_options = python.BaseOptions(model_asset_path=model_path)
-        options = vision.FaceLandmarkerOptions(
-            base_options=base_options,
-            output_face_blendshapes=False,
-            output_facial_transformation_matrixes=False,
-            num_faces=1,
-            min_face_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+
+# =====================================================================
+# Face Lock State Machine
+# =====================================================================
+
+class FaceLockState:
+    """Represents the state of the face lock."""
+
+    SEARCHING = "searching"  # looking for target face
+    LOCKED = "locked"  # target face found and locked
+    LOST = "lost"  # target face temporarily lost but not released
+
+    def __init__(self):
+        self.state = self.SEARCHING
+        self.locked_identity: Optional[str] = None
+        self.locked_bbox: Optional[Tuple[int, int, int, int]] = None
+        self.locked_kps: Optional[np.ndarray] = None
+        self.lock_confidence: float = 0.0
+        self.frames_since_detection = 0
+        self.lock_acquired_time: Optional[float] = None
+
+
+# =====================================================================
+# Main Face Locking System
+# =====================================================================
+
+class FaceLockSystem:
+    """
+    Face locking and action detection system.
+
+    Workflow:
+    1. User selects target identity
+    2. System searches for this identity
+    3. When found with high confidence, acquires lock
+    4. While locked, system tracks face and detects actions
+    5. If face disappears, lock is held for N frames
+    6. If face reappears, lock is re-acquired
+    7. User can release lock manually
+    """
+
+    def __init__(
+        self,
+        db_path: Path = Path("data/db/face_db.npz"),
+        enroll_dir: Path = Path("data/enroll"),
+        model_path: Path = Path("models/embedder_arcface.onnx"),
+        distance_threshold: float = 0.54,
+        lock_timeout_frames: int = 30,
+        min_lock_confidence: float = 0.65,
+    ):
+        """
+        Args:
+            db_path: path to face database NPZ
+            model_path: path to ArcFace ONNX model
+            distance_threshold: cosine distance threshold for recognition
+            lock_timeout_frames: frames to wait before releasing lock if face lost
+            min_lock_confidence: minimum confidence to acquire lock
+        """
+        # Load database
+        self.db = load_db_npz(db_path)
+        self.db_names = sorted(self.db.keys())
+
+        # Initialize components
+        self.detector = Haar5ptDetector(min_size=(70, 70), smooth_alpha=0.80, debug=False)
+        self.embedder = ArcFaceEmbedderONNX(model_path=model_path, debug=False)
+        self.action_detector = ActionDetector()
+
+        # Configuration
+        self.distance_threshold = float(distance_threshold)
+        self.lock_timeout_frames = int(lock_timeout_frames)
+        self.min_lock_confidence = float(min_lock_confidence)
+
+        # State
+        self.state = FaceLockState()
+        self.history_logger: Optional[FaceHistoryLogger] = None
+
+    def select_target(self, face_name: str) -> bool:
+        """
+        Select target identity to lock.
+
+        Args:
+            face_name: name of enrolled identity
+
+        Returns:
+            True if name exists in database, False otherwise
+        """
+        if face_name.lower() not in [n.lower() for n in self.db_names]:
+            return False
+
+        # Match case to database
+        for db_name in self.db_names:
+            if db_name.lower() == face_name.lower():
+                self.state.locked_identity = db_name
+                break
+
+        # Initialize history logger
+        self.history_logger = FaceHistoryLogger(
+            face_name=self.state.locked_identity,
+            output_dir=Path("data/face_histories"),
         )
-        self.landmarker = vision.FaceLandmarker.create_from_options(options)
-       
-        self.idx_5pt = [33, 263, 1, 61, 291]  
-        
-        self.idx_left_eye = [362, 385, 387, 263, 373, 380]
-        
-        self.idx_right_eye = [33, 160, 158, 133, 153, 144]
-        
-        self.idx_mouth = [61, 291, 13, 14]
-        self.min_size = min_size
+        self.history_logger.log_status(f"Target face selected: {self.state.locked_identity}")
 
-    def _extract_kps(self, lm, idxs, W, H):
-        return np.array([[lm[i].x * W, lm[i].y * H] for i in idxs], dtype=np.float32)
+        return True
 
-    def detect(self, frame_bgr: np.ndarray, max_faces: int = 5) -> List[FaceDet]:
+    def _recognize_face(self, aligned_face: np.ndarray) -> Tuple[Optional[str], float, float]:
+        """
+        Recognize a single aligned face.
+
+        Returns:
+            (identity_name, distance, confidence) or (None, 1.0, 0.0) if unknown
+        """
+        if not self.db_names:
+            return None, 1.0, 0.0
+
+        # Get embedding
+        emb_result = self.embedder.embed(aligned_face)
+        emb = emb_result.embedding  # Extract numpy array from EmbeddingResult
+
+        # Find best match
+        best_name = None
+        best_distance = float("inf")
+        best_confidence = 0.0
+
+        for db_name in self.db_names:
+            db_emb = self.db[db_name]
+            dist = cosine_distance(emb, db_emb)
+
+            if dist < best_distance:
+                best_distance = dist
+                best_name = db_name if dist <= self.distance_threshold else None
+                best_confidence = max(0.0, 1.0 - dist)
+
+        return best_name, best_distance, best_confidence
+
+    def process_frame(self, frame_bgr: np.ndarray) -> Dict:
+        """
+        Process a single frame for face locking and action detection.
+
+        Args:
+            frame_bgr: BGR frame from camera
+
+        Returns:
+            Dictionary with state information:
+            {
+                "state": "searching" | "locked" | "lost",
+                "locked_identity": name or None,
+                "face_box": (x1, y1, x2, y2) or None,
+                "face_kps": (5, 2) array or None,
+                "recognition_distance": float,
+                "lock_confidence": float,
+                "actions": [Action, ...],
+                "time_locked_seconds": float or None,
+            }
+        """
         H, W = frame_bgr.shape[:2]
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=self.min_size)
-        if len(faces) == 0:
-            return []
-        # Sorting by area
-        areas = faces[:, 2] * faces[:, 3]
-        order = np.argsort(areas)[::-1]
-        faces = faces[order][:max_faces]
-        out = []
-        for (x, y, w, h) in faces:
-            mx, my = 0.25 * w, 0.35 * h
-            rx1, ry1 = max(0, int(x - mx)), max(0, int(y - my))
-            rx2, ry2 = min(W, int(x + w + mx)), min(H, int(y + h + my))
-            roi = frame_bgr[ry1:ry2, rx1:rx2]
-            rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            res = self.landmarker.detect(mp_image)
-            if not res.face_landmarks:
-                continue
-            lm = res.face_landmarks[0]
-            rw, rh = roi.shape[1], roi.shape[0]
-            kps5 = self._extract_kps(lm, self.idx_5pt, rw, rh)
-            kps5[:, 0] += rx1
-            kps5[:, 1] += ry1
-            # Building bbox from 5pt
-            x_min, y_min = np.min(kps5, axis=0)
-            x_max, y_max = np.max(kps5, axis=0)
-            bw = x_max - x_min
-            bh = y_max - y_min
-            x1 = int(max(0, x_min - 0.55 * bw))
-            y1 = int(max(0, y_min - 0.85 * bh))
-            x2 = int(min(W - 1, x_max + 0.55 * bw))
-            y2 = int(min(H - 1, y_max + 1.15 * bh))
-            # Extra kps
-            left_eye = self._extract_kps(lm, self.idx_left_eye, rw, rh)
-            left_eye[:, 0] += rx1
-            left_eye[:, 1] += ry1
-            right_eye = self._extract_kps(lm, self.idx_right_eye, rw, rh)
-            right_eye[:, 0] += rx1
-            right_eye[:, 1] += ry1
-            mouth = self._extract_kps(lm, self.idx_mouth, rw, rh)
-            mouth[:, 0] += rx1
-            mouth[:, 1] += ry1
-            out.append(FaceDet(x1, y1, x2, y2, 1.0, kps5, left_eye, right_eye, mouth))
-        return out
+        now = time.time()
+
+        # Detect faces
+        detected_faces = self.detector.detect(frame_bgr, max_faces=1)
+
+        result = {
+            "state": self.state.state,
+            "locked_identity": self.state.locked_identity,
+            "face_box": self.state.locked_bbox,
+            "face_kps": self.state.locked_kps,
+            "recognition_distance": None,
+            "lock_confidence": self.state.lock_confidence,
+            "actions": [],
+            "time_locked_seconds": None,
+        }
+
+        # No faces detected
+        if not detected_faces:
+            self.state.frames_since_detection += 1
+
+            if self.state.state == self.state.LOCKED:
+                if self.state.frames_since_detection > self.lock_timeout_frames:
+                    # Timeout, release lock
+                    self.state.state = self.state.SEARCHING
+                    self.state.locked_bbox = None
+                    self.state.locked_kps = None
+                    if self.history_logger:
+                        self.history_logger.log_status("Lock LOST (face disappeared)")
+                else:
+                    # Still in timeout window, hold lock
+                    self.state.state = self.state.LOST
+                    result["state"] = self.state.LOST
+
+            return result
+
+        # Face detected
+        face = detected_faces[0]
+        self.state.frames_since_detection = 0
+
+        # Align and recognize
+        aligned, _ = align_face_5pt(frame_bgr, face.kps, out_size=(112, 112))
+        identity, distance, confidence = self._recognize_face(aligned)
+
+        result["recognition_distance"] = float(distance)
+
+        # State machine: SEARCHING -> LOCKED or stay SEARCHING
+        if self.state.state == self.state.SEARCHING:
+            if identity == self.state.locked_identity and confidence >= self.min_lock_confidence:
+                # Lock acquired
+                self.state.state = self.state.LOCKED
+                self.state.locked_bbox = (face.x1, face.y1, face.x2, face.y2)
+                self.state.locked_kps = face.kps.copy()
+                self.state.lock_confidence = confidence
+                self.state.lock_acquired_time = now
+
+                result["state"] = self.state.LOCKED
+                result["face_box"] = self.state.locked_bbox
+                result["face_kps"] = self.state.locked_kps
+                result["lock_confidence"] = confidence
+
+                if self.history_logger:
+                    self.history_logger.log_status(
+                        f"Lock ACQUIRED for {self.state.locked_identity} (confidence={confidence:.3f})"
+                    )
+
+        # State machine: LOCKED -> LOCKED or LOST
+        elif self.state.state == self.state.LOCKED:
+            # Update tracked position
+            self.state.locked_bbox = (face.x1, face.y1, face.x2, face.y2)
+            self.state.locked_kps = face.kps.copy()
+            self.state.lock_confidence = confidence
+
+            result["state"] = self.state.LOCKED
+            result["face_box"] = self.state.locked_bbox
+            result["face_kps"] = self.state.locked_kps
+            result["lock_confidence"] = confidence
+
+            # Detect actions only while locked
+            actions = self.action_detector.detect(face.kps)
+            result["actions"] = actions
+
+            if self.history_logger:
+                self.history_logger.log_actions(actions)
+
+            # Verify lock still valid (optional: re-check identity)
+            if identity != self.state.locked_identity:
+                # Wrong identity detected, stay locked but log
+                pass
+
+        # State machine: LOST -> LOCKED (face reappeared) or LOST (still lost)
+        elif self.state.state == self.state.LOST:
+            if identity == self.state.locked_identity and confidence >= self.min_lock_confidence:
+                # Lock re-acquired
+                self.state.state = self.state.LOCKED
+                self.state.locked_bbox = (face.x1, face.y1, face.x2, face.y2)
+                self.state.locked_kps = face.kps.copy()
+                self.state.lock_confidence = confidence
+
+                result["state"] = self.state.LOCKED
+                result["face_box"] = self.state.locked_bbox
+                result["face_kps"] = self.state.locked_kps
+
+                if self.history_logger:
+                    self.history_logger.log_status(
+                        f"Lock RE-ACQUIRED for {self.state.locked_identity}"
+                    )
+
+        # Time locked
+        if self.state.lock_acquired_time is not None and self.state.state in (
+            self.state.LOCKED,
+            self.state.LOST,
+        ):
+            result["time_locked_seconds"] = now - self.state.lock_acquired_time
+
+        return result
+
+    def release_lock(self) -> None:
+        """Manually release the lock."""
+        if self.state.state in (self.state.LOCKED, self.state.LOST):
+            self.state.state = self.state.SEARCHING
+            self.state.locked_bbox = None
+            self.state.locked_kps = None
+            self.state.lock_acquired_time = None
+            if self.history_logger:
+                self.history_logger.log_status("Lock RELEASED by user")
+
+    def finalize_session(self) -> str:
+        """
+        Finalize the locking session and save history.
+
+        Returns:
+            path to history file
+        """
+        if self.history_logger:
+            return self.history_logger.finalize()
+        return ""
 
 
-class FaceDBMatcher:
-    def __init__(self, db: Dict[str, np.ndarray], dist_thresh: float = 0.34):
-        self.db = db
-        self.dist_thresh = dist_thresh
-        self._names = sorted(db.keys())
-        self._mat = np.stack([db[n] for n in self._names], axis=0) if self._names else None
+# =====================================================================
+# UI & Demo
+# =====================================================================
 
-    def reload_from(self, path: Path):
-        self.db = load_db_npz(path)
-        self._names = sorted(self.db.keys())
-        self._mat = np.stack([self.db[n] for n in self._names], axis=0) if self._names else None
-
-    def match(self, emb: np.ndarray) -> MatchResult:
-        if self._mat is None:
-            return MatchResult(None, 1.0, 0.0, False)
-        sims = np.dot(self._mat, emb.reshape(-1))
-        best_i = np.argmax(sims)
-        best_sim = sims[best_i]
-        best_dist = 1.0 - best_sim
-        accepted = best_dist <= self.dist_thresh
-        name = self._names[best_i] if accepted else None
-        return MatchResult(name, best_dist, best_sim, accepted)
-
-
-def record_action(locked: LockedFace, action: str, desc: str = ""):
-    if locked.history_file is None:
-        ts = int(time.time() * 100)
-        locked.history_file = HISTORY_DIR / f"{locked.name.lower()}_history_{ts}.txt"
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"{now} {action} {desc}\n"
-    with open(locked.history_file, "a") as f:
-        f.write(line)
+def _put_text(img, text: str, xy=(10, 30), scale=0.8, thickness=2):
+    """Draw text with white color and black outline."""
+    cv2.putText(img, text, xy, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness + 2)
+    cv2.putText(img, text, xy, cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), thickness)
 
 
 def main():
-    db_path = Path("data/db/face_db.npz")
-    det = HaarFaceMeshExtended(min_size=(70, 70))
-    embedder = ArcFaceEmbedderONNX()
-    db = load_db_npz(db_path)
-    matcher = FaceDBMatcher(db, dist_thresh=0.34)
-    if TARGET_NAME not in matcher.db:
-        print(f"Target '{TARGET_NAME}' not enrolled. Enroll first.")
+    """Interactive face locking demo."""
+    # Load system WITHOUT opening camera yet
+    system = FaceLockSystem(
+        enroll_dir=Path("data/enroll"),
+        distance_threshold=0.54,
+    )
+    
+    # Get available faces
+    if not system.db_names:
+        print("No enrolled faces found. Run enrollment first.")
         return
+
+    print("\n" + "=" * 80)
+    print("FACE LOCKING SYSTEM")
+    print("=" * 80)
+    print(f"\nAvailable faces: {', '.join(system.db_names)}\n")
+
+    # User selects target BEFORE opening camera
+    while True:
+        target = input("Select face to lock (or 'q' to quit): ").strip()
+        if target.lower() == "q":
+            return
+        if system.select_target(target):
+            print(f"✓ Target selected: {target}")
+            break
+        print(f"✗ Face '{target}' not found. Try again.")
+
+    # NOW open camera after selection
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         raise RuntimeError("Camera not available")
-    print(f"Face Locking for '{TARGET_NAME}'. q=quit, r=reload DB, +/- thresh, d=debug, l=force lock")
+    
+    # Create large display manager
+    display = CameraDisplay(mode=CameraDisplay.LARGE)
+    display.create_window("Face Locking", resizable=True)
+
+    print("\nStarting face locking...")
+    print("Controls:")
+    print("  r  : release lock")
+    print("  q  : quit")
+    print("=" * 80 + "\n")
+
     t0 = time.time()
     frames = 0
-    fps = None
-    show_debug = False
-    locked: Optional[LockedFace] = None
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        faces = det.detect(frame)
-        vis = frame.copy()
-        # FPS
-        frames += 1
-        dt = time.time() - t0
-        if dt >= 1.0:
-            fps = frames / dt
-            frames = 0
-            t0 = time.time()
-        selected_face = None
-        if locked is None:
-            # Finding target
-            for f in faces:
-                aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
-                emb = embedder.embed(aligned)
-                mr = matcher.match(emb)
-                if mr.name == TARGET_NAME:
-                    # Lock
-                    eye_dist = np.linalg.norm(f.kps[0] - f.kps[1])
-                    _, mouth_open = compute_mouth_metrics(f.mouth_kps, eye_dist)
-                    mouth_width_ratio, _ = compute_mouth_metrics(f.mouth_kps, eye_dist)
-                    locked = LockedFace(
-                        TARGET_NAME,
-                        (f.x1 + f.x2) / 2.0,
-                        (compute_ear(f.eye_left_kps) + compute_ear(f.eye_right_kps)) / 2.0,
-                        mouth_width_ratio,
-                        mouth_open,
-                        (f.x1, f.y1, f.x2, f.y2),
-                        emb
-                    )
-                    record_action(locked, "LOCKED", "Face locked")
-                    selected_face = f
-                    break
-        else:
-            # Track locked face using IOU + embedding confirm
-            best_iou = 0.0
-            best_face = None
-            best_emb_sim = 0.0
-            for f in faces:
-                cur_iou = iou(locked.prev_box, (f.x1, f.y1, f.x2, f.y2))
-                if cur_iou > best_iou:
-                    best_iou = cur_iou
-                    best_face = f
-            if best_face and best_iou > 0.3:
-                aligned, _ = align_face_5pt(frame, best_face.kps, out_size=(112, 112))
-                emb = embedder.embed(aligned)
-                emb_sim = cosine_similarity(locked.embedding, emb)
-                if emb_sim > 0.6:  
-                    selected_face = best_face
-                    locked.missing_count = 0
-                    locked.embedding = 0.7 * locked.embedding + 0.3 * emb  # Smooth embedding
-                else:
-                    locked.missing_count += 1
+    fps = 0.0
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+
+            # Process frame
+            result = system.process_frame(frame)
+
+            # Visualize
+            vis = frame.copy()
+            H, W = vis.shape[:2]
+
+            # Draw state indicator
+            state_text = result["state"].upper()
+            if result["state"] == "locked":
+                state_color = (0, 255, 0)
+                state_symbol = "🔒"
+            elif result["state"] == "lost":
+                state_color = (0, 165, 255)
+                state_symbol = "⏱"
             else:
-                locked.missing_count += 1
-            if locked.missing_count >= MISSING_FRAMES_UNLOCK:
-                record_action(locked, "UNLOCKED", "Face lost")
-                if locked.history_file:
-                    print(f"History saved to {locked.history_file}")
-                locked = None
-        # Process actions if locked and selected
-        if locked and selected_face:
-            center_x = (selected_face.x1 + selected_face.x2) / 2.0
-            delta_x = center_x - locked.prev_center_x
-            if delta_x > MOVE_DELTA_THRESH:
-                record_action(locked, "MOVE_RIGHT", f"Delta: {delta_x:.1f}")
-            elif delta_x < -MOVE_DELTA_THRESH:
-                record_action(locked, "MOVE_LEFT", f"Delta: {delta_x:.1f}")
-            locked.prev_center_x = center_x
-            ear_left = compute_ear(selected_face.eye_left_kps)
-            ear_right = compute_ear(selected_face.eye_right_kps)
-            avg_ear = (ear_left + ear_right) / 2.0
-            if avg_ear < BLINK_EAR_THRESH and locked.prev_ear >= BLINK_EAR_THRESH:
-                record_action(locked, "BLINK")
-            locked.prev_ear = avg_ear
-            eye_dist = np.linalg.norm(selected_face.kps[0] - selected_face.kps[1])
-            mouth_width_ratio, mouth_open = compute_mouth_metrics(selected_face.mouth_kps, eye_dist)
-            if mouth_width_ratio > SMILE_MOUTH_WIDTH_RATIO and locked.prev_mouth_width_ratio <= SMILE_MOUTH_WIDTH_RATIO:
-                if mouth_open > SMILE_OPEN_THRESH:
-                    record_action(locked, "LAUGH")
+                state_color = (0, 0, 255)
+                state_symbol = "🔍"
+
+            cv2.rectangle(vis, (5, 5), (W - 5, 50), (0, 0, 0), -1)
+            cv2.putText(
+                vis,
+                f"Lock: {state_text} | Target: {result['locked_identity']}",
+                (15, 35),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                state_color,
+                2,
+            )
+
+            # Draw detected face if locked
+            if result["state"] in ("locked", "lost") and result["face_box"]:
+                x1, y1, x2, y2 = result["face_box"]
+                color = state_color
+                thickness = 3 if result["state"] == "locked" else 2
+                cv2.rectangle(vis, (x1, y1), (x2, y2), color, thickness)
+
+                # Draw landmarks
+                if result["face_kps"] is not None:
+                    for (x, y) in result["face_kps"].astype(int):
+                        cv2.circle(vis, (int(x), int(y)), 3, color, -1)
+
+                # Draw info
+                info_y = y1 - 10 if y1 > 40 else y2 + 20
+                conf_text = f"Conf: {result['lock_confidence']:.2f}"
+                if result["time_locked_seconds"] is not None:
+                    time_text = f" | Time: {result['time_locked_seconds']:.1f}s"
                 else:
-                    record_action(locked, "SMILE")
-            locked.prev_mouth_width_ratio = mouth_width_ratio
-            locked.prev_mouth_open = mouth_open
-            locked.prev_box = (selected_face.x1, selected_face.y1, selected_face.x2, selected_face.y2)
-            # Draw locked indicator
-            cv2.rectangle(vis, (selected_face.x1, selected_face.y1), (selected_face.x2, selected_face.y2), (255, 0, 0), 3)
-            cv2.putText(vis, f"LOCKED: {locked.name}", (selected_face.x1, selected_face.y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-        # Draw all faces (optional)
-        for f in faces:
-            if f != selected_face:
-                cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), (0, 255, 0), 1)
-        # Header
-        header = f"Target: {TARGET_NAME} Locked: {'Yes' if locked else 'No'} Thr(dist): {matcher.dist_thresh:.2f}"
-        if fps:
-            header += f" FPS: {fps:.1f}"
-        cv2.putText(vis, header, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
-        cv2.imshow("face_lock", vis)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            break
-        elif key == ord("r"):
-            matcher.reload_from(db_path)
-        elif key == ord("+"):
-            matcher.dist_thresh = min(1.20, matcher.dist_thresh + 0.01)
-        elif key == ord("-"):
-            matcher.dist_thresh = max(0.05, matcher.dist_thresh - 0.01)
-        elif key == ord("d"):
-            show_debug = not show_debug
-        elif key == ord("l") and locked is None and faces:  # Force lock to first face
-            f = faces[0]
-            aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
-            emb = embedder.embed(aligned)
-            mr = matcher.match(emb)
-            if mr.accepted and mr.name == TARGET_NAME:
-                eye_dist = np.linalg.norm(f.kps[0] - f.kps[1])
-                mouth_width_ratio, mouth_open = compute_mouth_metrics(f.mouth_kps, eye_dist)
-                locked = LockedFace(
-                    TARGET_NAME,
-                    (f.x1 + f.x2) / 2.0,
-                    (compute_ear(f.eye_left_kps) + compute_ear(f.eye_right_kps)) / 2.0,
-                    mouth_width_ratio,
-                    mouth_open,
-                    (f.x1, f.y1, f.x2, f.y2),
-                    emb
+                    time_text = ""
+
+                cv2.putText(
+                    vis,
+                    conf_text + time_text,
+                    (x1, info_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    color,
+                    2,
                 )
-                record_action(locked, "LOCKED", "Forced lock")
-    if locked and locked.history_file:
-        print(f"History saved to {locked.history_file}")
-    cap.release()
-    cv2.destroyAllWindows()
+
+                # Show actions detected
+                if result["actions"]:
+                    action_text = " | ".join([a.action_type for a in result["actions"]])
+                    cv2.putText(
+                        vis,
+                        f"Actions: {action_text}",
+                        (x1, info_y + 25),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 255),
+                        2,
+                    )
+
+            # FPS
+            frames += 1
+            dt = time.time() - t0
+            if dt >= 1.0:
+                fps = frames / dt
+                frames = 0
+                t0 = time.time()
+
+            cv2.putText(
+                vis,
+                f"FPS: {fps:.1f}",
+                (W - 150, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+            )
+
+            cv2.imshow("Face Locking", vis)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            elif key == ord("r"):
+                system.release_lock()
+                print("✗ Lock released by user")
+
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+        # Finalize
+        history_file = system.finalize_session()
+        print(f"\n✓ Session ended")
+        print(f"✓ History saved to: {history_file}")
+        if system.history_logger:
+            print(system.history_logger.get_summary())
+
 
 if __name__ == "__main__":
     main()
