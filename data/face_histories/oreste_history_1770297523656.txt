@@ -1,0 +1,86 @@
+================================================================================
+Face Locking Session History
+================================================================================
+Face Name: ORESTE
+Session Start: 2026-02-05 15:18:43.656
+File: oreste_history_1770297523656.txt
+================================================================================
+Format: [HH:MM:SS.mmm] ACTION_TYPE | description | confidence | value
+================================================================================
+
+[00:00:00.002] STATUS                | Target face selected: Oreste
+[00:00:05.229] STATUS                | Lock ACQUIRED for Oreste (confidence=0.699)
+[00:00:06.447] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:06.751] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:09.594] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:11.795] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:12.051] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:13.216] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:13.786] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:14.359] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:14.696] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:14.828] MOVE_RIGHT      | Head movement right (8.6px)                        | conf=0.43 | val=8.5717
+[00:00:15.144] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:15.267] SMILE           | Smile/laugh detected (mouth height ratio: 1.25)    | conf=0.90 | val=1.2487
+[00:00:15.619] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:15.883] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:15.996] SMILE           | Smile/laugh detected (mouth height ratio: 1.22)    | conf=0.90 | val=1.2171
+[00:00:16.197] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:17.569] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:18.060] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:18.571] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:20.732] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:21.563] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:23.673] SMILE           | Smile/laugh detected (mouth height ratio: 1.12)    | conf=0.77 | val=1.1158
+[00:00:24.136] SMILE           | Smile/laugh detected (mouth height ratio: 1.10)    | conf=0.69 | val=1.1035
+[00:00:24.527] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:24.938] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:25.196] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:25.329] SMILE           | Smile/laugh detected (mouth height ratio: 1.28)    | conf=0.90 | val=1.2829
+[00:00:25.515] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:25.642] SMILE           | Smile/laugh detected (mouth height ratio: 1.22)    | conf=0.90 | val=1.2175
+[00:00:25.758] SMILE           | Smile/laugh detected (mouth height ratio: 1.10)    | conf=0.64 | val=1.0961
+[00:00:25.897] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:26.023] SMILE           | Smile/laugh detected (mouth height ratio: 1.14)    | conf=0.90 | val=1.1379
+[00:00:30.342] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:30.728] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:33.877] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:35.954] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:36.068] MOVE_RIGHT      | Head movement right (9.9px)                        | conf=0.50 | val=9.9053
+[00:00:36.353] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:36.481] SMILE           | Smile/laugh detected (mouth height ratio: 1.11)    | conf=0.73 | val=1.1096
+[00:00:37.158] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:41.183] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:41.331] SMILE           | Smile/laugh detected (mouth height ratio: 1.18)    | conf=0.90 | val=1.1827
+[00:00:42.469] SMILE           | Smile/laugh detected (mouth height ratio: 1.16)    | conf=0.90 | val=1.1611
+[00:00:45.708] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:56.797] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:56.917] SMILE           | Smile/laugh detected (mouth height ratio: 1.15)    | conf=0.90 | val=1.1503
+[00:00:59.434] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:00:59.552] SMILE           | Smile/laugh detected (mouth height ratio: 1.21)    | conf=0.90 | val=1.2124
+[00:01:01.375] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:02.244] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:02.780] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:03.106] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:03.256] SMILE           | Smile/laugh detected (mouth height ratio: 1.58)    | conf=0.90 | val=1.5826
+[00:01:03.447] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:03.578] MOVE_RIGHT      | Head movement right (8.1px)                        | conf=0.41 | val=8.1143
+[00:01:04.453] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:05.187] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:05.336] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:05.465] SMILE           | Smile/laugh detected (mouth height ratio: 1.20)    | conf=0.90 | val=1.2044
+[00:01:05.465] MOVE_RIGHT      | Head movement right (19.1px)                       | conf=0.95 | val=19.0727
+[00:01:06.841] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:07.139] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:07.408] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:07.575] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:07.688] SMILE           | Smile/laugh detected (mouth height ratio: 1.50)    | conf=0.90 | val=1.4982
+[00:01:07.688] MOVE_LEFT       | Head movement left (16.5px)                        | conf=0.83 | val=16.5082
+[00:01:09.444] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:10.624] STATUS                | Lock RE-ACQUIRED for Oreste
+[00:01:13.845] STATUS                | Lock RE-ACQUIRED for Oreste
+
+================================================================================
+Session ended at 2026-02-05 15:20:00.467
+Total actions recorded: 21
+================================================================================

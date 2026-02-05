@@ -1,2 +1,0 @@
-2026-02-05 09:23:18 LOCKED Face locked
-2026-02-05 09:23:19 UNLOCKED Face lost
