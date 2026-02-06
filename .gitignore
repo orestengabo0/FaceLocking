@@ -1,3 +1,5 @@
 .venv
 data/enroll/*
 data/db/*
+data/history/*
+data/face_histories/*
