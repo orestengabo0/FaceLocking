@@ -1,9 +1,8 @@
 import cv2
 import numpy as np
 import time
-import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 from dataclasses import dataclass
 
 try:

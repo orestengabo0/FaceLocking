@@ -4,3 +4,4 @@ onnxruntime
 scipy 
 tqdm 
 mediapipe
+paho-mqtt
